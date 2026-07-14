@@ -1,0 +1,14 @@
+Moved from:   %11 = mul nsw i32 %0, %1
+Moved to:     %8 = mul nsw i32 %0, %1
+Moved from:   %22 = icmp sgt i32 %0, 0
+Moved to:     %9 = icmp sgt i32 %0, 0
+Moved from:   %28 = mul nsw i32 %1, %2
+Moved to:     %10 = mul nsw i32 %1, %2
+Moved from:   %32 = add nsw i32 %0, %1
+Moved to:     %11 = add nsw i32 %0, %1
+Moved from:   %33 = add nsw i32 %11, %2
+Moved to:     %12 = add nsw i32 %11, %2
+Moved from:   %27 = add nsw i32 %1, %2
+Moved to:     %13 = add nsw i32 %1, %2
+Moved from:   %20 = add nsw i32 %8, %2
+Moved to:     %14 = add nsw i32 %8, %2
