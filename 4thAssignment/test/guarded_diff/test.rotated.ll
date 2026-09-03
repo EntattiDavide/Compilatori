@@ -1,4 +1,4 @@
-; ModuleID = 'test.rotated.ll'
+; ModuleID = 'test.m2r.ll'
 source_filename = "test.c"
 target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
 target triple = "x86_64-pc-linux-gnu"
@@ -11,7 +11,7 @@ define dso_local void @test_fusion(ptr noundef %0, ptr noundef %1, i32 noundef %
 6:                                                ; preds = %4
   br label %7
 
-7:                                                ; preds = %11, %6
+7:                                                ; preds = %6, %11
   %.011 = phi i32 [ 0, %6 ], [ %12, %11 ]
   %8 = mul nsw i32 %.011, 2
   %9 = sext i32 %.011 to i64
@@ -34,7 +34,7 @@ define dso_local void @test_fusion(ptr noundef %0, ptr noundef %1, i32 noundef %
 17:                                               ; preds = %15
   br label %18
 
-18:                                               ; preds = %25, %17
+18:                                               ; preds = %17, %25
   %.02 = phi i32 [ 0, %17 ], [ %26, %25 ]
   %19 = sext i32 %.02 to i64
   %20 = getelementptr inbounds i32, ptr %0, i64 %19

@@ -277,6 +277,7 @@ struct MyLoopFusion : PassInfoMixin<MyLoopFusion> {
 
         // Check all conditions required for fusion
         // Check all 4 fusion conditions separately to print every failure
+        errs() << "  guarded: first=" << First->isGuarded() << " second=" << Second->isGuarded() << "\n";
         bool adj = areAdjacent(First, Second);
         bool trip = haveSameTripCount(First, Second, SE);
         bool ctrl = areControlEquivalent(First, Second, DT, PDT);
