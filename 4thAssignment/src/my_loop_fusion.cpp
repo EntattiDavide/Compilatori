@@ -1,124 +1,177 @@
+//=============================================================================
+// FILE:
+//    my_loop_fusion.cpp
+//
+// DESCRIPTION:
+//    Loop fusion for adjacent loops with same trip count (PDF p.7).
+//    Handles guarded / non-guarded adjacency (p.9), control equivalence
+//    on entry (guard/preheader, p.11), SCEV trip count (p.14-17) and
+//    hybrid DependenceInfo+SCEV distance (p.20-23). Supports 2-block
+//    (do-while / rotated) and 3-block (for) loops.
+//
+// USAGE:
+//    New PM
+//      opt -load-pass-plugin=<path-to>libMyLoopFusion.so -passes="my-loop-fusion" \
+//        -S <input-llvm-file> -o <output-llvm-file>
+//
+// License: MIT
+//=============================================================================
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Analysis/DependenceAnalysis.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/PostDominators.h"
 #include "llvm/Analysis/ScalarEvolution.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
-#include "llvm/IR/ValueMap.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Passes/PassPlugin.h"
 #include "llvm/Support/raw_ostream.h"
+#include <algorithm>
 
 using namespace llvm;
 
 namespace {
 
+// Check if two loops are adjacent (PDF p.9) - with dedicated exit (LCSSA)
 static bool areAdjacent(Loop *First, Loop *Second) {
   if (!First || !Second || First == Second) return false;
 
+  bool FG = First->isGuarded();
+  bool SG = Second->isGuarded();
+
+  if (FG != SG) return false;
+
+  if (FG && SG) {
+    BranchInst *GA = First->getLoopGuardBranch();
+    BranchInst *GB = Second->getLoopGuardBranch();
+    if (!GA || !GB) return false;
+    Value *CA = GA->getCondition();
+    Value *CB = GB->getCondition();
+    if (CA != CB) {
+      if (auto *IA = dyn_cast<Instruction>(CA))
+        if (auto *IB = dyn_cast<Instruction>(CB)) {
+          if (!IA->isIdenticalTo(IB)) return false;
+        } else
+          return false;
+      else
+        return false;
+    }
+    BasicBlock *EntryB = GB->getParent();
+    BasicBlock *SuccOutside = nullptr;
+    for (unsigned s = 0; s < GA->getNumSuccessors(); ++s) {
+      BasicBlock *Succ = GA->getSuccessor(s);
+      if (!First->contains(Succ)) SuccOutside = Succ;
+    }
+    if (!SuccOutside) return false;
+    if (SuccOutside == EntryB) return true;
+    // Dedicated exit: SuccOutside -> Exit0 -> EntryB
+    BasicBlock *Exit0 = First->getExitBlock();
+    if (Exit0 && Exit0->getSinglePredecessor() == SuccOutside) {
+      if (auto *T = dyn_cast<BranchInst>(Exit0->getTerminator()))
+        if (T->getSuccessor(0) == EntryB) return true;
+    }
+    if (auto *PB = Second->getLoopPreheader())
+      if (SuccOutside == PB) return true;
+    return false;
+  }
+
   BasicBlock *SecondPreheader = Second->getLoopPreheader();
   if (!SecondPreheader) return false;
-
-  for (auto &I : *SecondPreheader) {
-    if (!I.isTerminator()) {
-        //The preheader must only contain a terminator instruction,
-        //otherwise it means other operations are happening inbetween
-        return false; 
-    }
-  }
-
+  for (auto &I : *SecondPreheader)
+    if (!I.isTerminator()) return false;
   SmallVector<BasicBlock *, 8> ExitBlocks;
   First->getExitBlocks(ExitBlocks);
-  for (BasicBlock *ExitBB : ExitBlocks) {
+  for (BasicBlock *ExitBB : ExitBlocks)
     if (ExitBB == SecondPreheader) return true;
-  }
-
+  // Dedicated exit for non-guarded rotated
+  if (auto *Exit0 = First->getExitBlock())
+    if (auto *T = dyn_cast<BranchInst>(Exit0->getTerminator()))
+      if (T->getNumSuccessors() == 1 && T->getSuccessor(0) == SecondPreheader)
+        return true;
   return false;
 }
 
+// Check if loops have same trip count via ScalarEvolution (PDF p.14-17)
 static bool haveSameTripCount(Loop *First, Loop *Second, ScalarEvolution &SE) {
   const SCEV *FirstTrip = SE.getBackedgeTakenCount(First);
   const SCEV *SecondTrip = SE.getBackedgeTakenCount(Second);
-  // Check for same number of backedge taken
-  if (!FirstTrip || !SecondTrip || isa<SCEVCouldNotCompute>(FirstTrip)) return false;
+  if (!FirstTrip || !SecondTrip || isa<SCEVCouldNotCompute>(FirstTrip) ||
+      isa<SCEVCouldNotCompute>(SecondTrip))
+    return false;
   return FirstTrip == SecondTrip;
 }
 
-static bool areControlEquivalent(Loop *First, Loop *Second, DominatorTree &DT, PostDominatorTree &PDT) {
-  BasicBlock *H1 = First->getHeader();
-  BasicBlock *H2 = Second->getHeader();
-
-  // Loop 1 dominates Loop 2 and Loop 2 postdominates Loop 1
-  return DT.dominates(H1, H2) && PDT.dominates(H2, H1);
+// Check control flow equivalence on entry
+// Entry = guard block if guarded, else preheader
+static bool areControlEquivalent(Loop *First, Loop *Second, DominatorTree &DT,
+                                 PostDominatorTree &PDT) {
+  auto getEntry = [](Loop *L) -> BasicBlock * {
+    if (L->isGuarded())
+      if (auto *G = L->getLoopGuardBranch()) return G->getParent();
+    return L->getLoopPreheader();
+  };
+  BasicBlock *E1 = getEntry(First);
+  BasicBlock *E2 = getEntry(Second);
+  // If either entry missing (e.g. loop without preheader) fall back to header
+  if (!E1) E1 = First->getHeader();
+  if (!E2) E2 = Second->getHeader();
+  return DT.dominates(E1, E2) && PDT.dominates(E2, E1);
 }
 
-// Three blocks: Header, Body, Latch
-static bool hasExactlyThreeBlocks(Loop *L) {
-  return L && L->getNumBlocks() == 3;
-}
-
-static BasicBlock* getBodyBlock(Loop *L) {
+// Get body block for 3-block loops (header / body / latch)
+static BasicBlock *getBodyBlock(Loop *L) {
   BasicBlock *Header = L->getHeader();
   BasicBlock *Latch = L->getLoopLatch();
-  for (BasicBlock *BB : L->getBlocks()) {
+  for (BasicBlock *BB : L->getBlocks())
     if (BB != Header && BB != Latch) return BB;
-  }
   return nullptr;
 }
 
+// Check that loop contains a single PHI (canonical IV)
 static bool hasSinglePhiInstruction(Loop *L) {
   unsigned PhiCount = 0;
-  for (BasicBlock *BB : L->getBlocks()) {
-    for (Instruction &I : *BB) {
-      if (isa<PHINode>(I)) {
-        PhiCount++;
-      }
-    }
-  }
+  for (BasicBlock *BB : L->getBlocks())
+    for (Instruction &I : *BB)
+      if (isa<PHINode>(I)) PhiCount++;
   return PhiCount == 1;
 }
 
-static bool hasNoNegativeDistanceDependencies(Loop *First, Loop *Second, ScalarEvolution &SE) {
-  // Olny load and store instructions can cause data dependencies
-  SmallVector<Instruction *, 16> Instructions1, Instructions2;
+// Dependence check: DI + SCEVAtScope (PDF p.20-23)
+static bool hasNoNegativeDistanceDependencies(Loop *First, Loop *Second,
+                                              ScalarEvolution &SE,
+                                              DependenceInfo &DI) {
+  SmallVector<Instruction *, 16> Mem0, Mem1;
   for (BasicBlock *BB : First->getBlocks())
-    for (Instruction &I : *BB) 
-      if (isa<LoadInst>(I) || isa<StoreInst>(I)) Instructions1.push_back(&I);
-
+    for (Instruction &I : *BB)
+      if (isa<LoadInst>(I) || isa<StoreInst>(I)) Mem0.push_back(&I);
   for (BasicBlock *BB : Second->getBlocks())
-    for (Instruction &I : *BB) 
-      if (isa<LoadInst>(I) || isa<StoreInst>(I)) Instructions2.push_back(&I);
+    for (Instruction &I : *BB)
+      if (isa<LoadInst>(I) || isa<StoreInst>(I)) Mem1.push_back(&I);
 
-  for (Instruction *I1 : Instructions1) {
-    for (Instruction *I2 : Instructions2) {
-      // Both load, no conflict
-      if (isa<LoadInst>(I1) && isa<LoadInst>(I2)) continue;
-
-      // Get pointers
-      Value *Ptr1 = isa<LoadInst>(I1) ? cast<LoadInst>(I1)->getPointerOperand() : cast<StoreInst>(I1)->getPointerOperand();
-      Value *Ptr2 = isa<LoadInst>(I2) ? cast<LoadInst>(I2)->getPointerOperand() : cast<StoreInst>(I2)->getPointerOperand();
-
-      // Alalyze the SCEV expressions for the pointers
-      const SCEVAddRecExpr *AR1 = dyn_cast<SCEVAddRecExpr>(SE.getSCEV(Ptr1));
-      const SCEVAddRecExpr *AR2 = dyn_cast<SCEVAddRecExpr>(SE.getSCEV(Ptr2));
-
-      if (AR1 && AR2) {
-        // Check for same step recurrence
-        if (AR1->getStepRecurrence(SE) != AR2->getStepRecurrence(SE)) return false;
-
-        // Calculate distance
-        const SCEV *DistSCEV = SE.getMinusSCEV(AR1->getStart(), AR2->getStart());
-        
-        if (const SCEVConstant *ConstDist = dyn_cast<SCEVConstant>(DistSCEV)) {
-          const SCEV *Step = AR1->getStepRecurrence(SE);
-
-          // Check for negative distance
-          if (SE.isKnownPositive(Step) && SE.isKnownNegative(DistSCEV) || SE.isKnownNegative(Step) && SE.isKnownPositive(DistSCEV)) {
-            return false; 
-          }
-        }
-      }
+  for (Instruction *I0 : Mem0) {
+    for (Instruction *I1 : Mem1) {
+      if (isa<LoadInst>(I0) && isa<LoadInst>(I1)) continue;
+      std::unique_ptr<Dependence> Dep = DI.depends(I0, I1, true);
+      if (!Dep) continue;
+      Value *Ptr0 = getLoadStorePointerOperand(I0);
+      Value *Ptr1 = getLoadStorePointerOperand(I1);
+      if (!Ptr0 || !Ptr1) return false;
+      const SCEV *S0 = SE.getSCEVAtScope(Ptr0, First);
+      const SCEV *S1 = SE.getSCEVAtScope(Ptr1, Second);
+      if (isa<SCEVCouldNotCompute>(S0) || isa<SCEVCouldNotCompute>(S1)) return false;
+      const SCEV *Dist0 = SE.getMinusSCEV(S0, S1);
+      if (Dist0->isZero()) continue;
+      const SCEVAddRecExpr *AR0 = dyn_cast<SCEVAddRecExpr>(S0);
+      const SCEVAddRecExpr *AR1 = dyn_cast<SCEVAddRecExpr>(S1);
+      if (!AR0 || !AR1) return false;
+      if (AR0->getStepRecurrence(SE) != AR1->getStepRecurrence(SE)) return false;
+      const SCEV *Step = AR0->getStepRecurrence(SE);
+      const SCEV *Dist = SE.getMinusSCEV(AR0->getStart(), AR1->getStart());
+      if ((SE.isKnownPositive(Step) && SE.isKnownNegative(Dist)) ||
+          (SE.isKnownNegative(Step) && SE.isKnownPositive(Dist)))
+        return false;
     }
   }
   return true;
@@ -126,80 +179,174 @@ static bool hasNoNegativeDistanceDependencies(Loop *First, Loop *Second, ScalarE
 
 struct MyLoopFusion : PassInfoMixin<MyLoopFusion> {
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &FAM) {
+    // Get required analyses
     auto &LI = FAM.getResult<LoopAnalysis>(F);
     auto &DT = FAM.getResult<DominatorTreeAnalysis>(F);
     auto &PDT = FAM.getResult<PostDominatorTreeAnalysis>(F);
     auto &SE = FAM.getResult<ScalarEvolutionAnalysis>(F);
+    auto &DI = FAM.getResult<DependenceAnalysis>(F);
 
     bool Modified = false;
 
-    SmallVector<Loop *, 16> AllLoops(LI.begin(), LI.end());
+    // Build ordered list of innermost loops in program order
+    auto getOrdered = [&]() {
+      SmallVector<Loop *, 8> V;
+      for (Loop *L : LI)
+        if (L->isInnermost()) V.push_back(L);
+      DenseMap<BasicBlock *, unsigned> Pos;
+      unsigned idx = 0;
+      for (BasicBlock &BB : F) Pos[&BB] = idx++;
+      llvm::sort(V, [&](Loop *A, Loop *B) {
+        return Pos[A->getHeader()] < Pos[B->getHeader()];
+      });
+      return V;
+    };
 
-    for (Loop *Second : AllLoops) {
-      for (Loop *First : AllLoops) {
-        if (First == Second) continue;
+    // Try to fuse successive loops iteratively (enables chaining 3->1)
+    bool changedIter = true;
+    while (changedIter) {
+      changedIter = false;
+      auto Ordered = getOrdered();
+      if (Ordered.size() < 2) break;
 
-        if (!areAdjacent(First, Second) ||
-            !haveSameTripCount(First, Second, SE) ||
-            !areControlEquivalent(First, Second, DT, PDT) ||
-            !hasNoNegativeDistanceDependencies(First, Second, SE)) {
-          continue;
-        }
-        
-        if (!hasExactlyThreeBlocks(First) || !hasExactlyThreeBlocks(Second)) {
-          continue;
-        }
+      for (size_t i = 0; i + 1 < Ordered.size(); ++i) {
+        Loop *First = Ordered[i];
+        Loop *Second = Ordered[i + 1];
 
-        BasicBlock *FirstBody = getBodyBlock(First);
-        BasicBlock *SecondBody = getBodyBlock(Second);
-        PHINode *IV1 = First->getCanonicalInductionVariable();
-        PHINode *IV2 = Second->getCanonicalInductionVariable();
+        // Require loop-simplify form
+        if (!First->isLoopSimplifyForm() || !Second->isLoopSimplifyForm()) continue;
+        if (First->getParentLoop() != Second->getParentLoop()) continue;
 
-        if (!FirstBody || !SecondBody || !IV1 || !IV2 || !hasSinglePhiInstruction(First) || !hasSinglePhiInstruction(Second)) {
-          continue;
-        }
+        // Check all 4 fusion conditions separately to print every failure
+        bool adj = areAdjacent(First, Second);
+        bool trip = haveSameTripCount(First, Second, SE);
+        bool ctrl = areControlEquivalent(First, Second, DT, PDT);
+        bool dep = hasNoNegativeDistanceDependencies(First, Second, SE, DI);
+        errs() << "  pair " << i << ": adj=" << adj << " trip=" << trip
+               << " ctrl=" << ctrl << " dep=" << dep << "\n";
+        if (!adj || !trip || !ctrl || !dep) continue;
 
-        // --- FUSION ---
+        // Check loop shape (must match, 2 or 3 blocks)
+        unsigned n1 = First->getNumBlocks();
+        unsigned n2 = Second->getNumBlocks();
+        if (n1 != n2) continue;
+        if (n1 != 2 && n1 != 3) continue;
 
-        // 1. RAUW: Replace All Uses of Second's Induction Variable with First's Induction Variable
-        IV2->replaceAllUsesWith(IV1);
-
-        // 2. Sposta le istruzioni
-        Instruction *IP = FirstBody->getTerminator();
-        for (auto It = SecondBody->begin(); It != SecondBody->end(); ) {
-          Instruction &I = *It++;
-          if (I.isTerminator()) continue;
-          I.moveBefore(IP);
-        }
-
-        // 3. Redirect the exit of the first loop to the exit of the second loop
-        BasicBlock *H1 = First->getHeader();
-        Instruction *H1Term = H1->getTerminator();
         BasicBlock *FirstExit = First->getExitBlock();
         BasicBlock *SecondExit = Second->getExitBlock();
-        // Move first header successor to second loop exit
-        for (unsigned i = 0; i < H1Term->getNumSuccessors(); ++i) {
-            if (H1Term->getSuccessor(i) == FirstExit) {
-                // Remove old exit block
-                FirstExit->eraseFromParent();
-                H1Term->setSuccessor(i, SecondExit);
+        BasicBlock *FirstExiting = First->getExitingBlock();
+        if (!FirstExit || !SecondExit || !FirstExiting) continue;
+
+        PHINode *IV1 = First->getCanonicalInductionVariable();
+        PHINode *IV2 = Second->getCanonicalInductionVariable();
+        if (!IV1 || !IV2) continue;
+        if (!hasSinglePhiInstruction(First) || !hasSinglePhiInstruction(Second))
+          continue;
+
+        if (n1 == 3) {
+          BasicBlock *FirstBody = getBodyBlock(First);
+          BasicBlock *SecondBody = getBodyBlock(Second);
+          if (!FirstBody || !SecondBody) continue;
+          IV2->replaceAllUsesWith(IV1);
+          Instruction *IP = FirstBody->getTerminator();
+          for (auto It = SecondBody->begin(); It != SecondBody->end();) {
+            Instruction &I = *It++;
+            if (I.isTerminator()) continue;
+            I.moveBefore(IP);
+          }
+          BranchInst *BI = dyn_cast<BranchInst>(FirstExiting->getTerminator());
+          if (!BI) continue;
+          bool isGuardedFusion = First->isGuarded() || Second->isGuarded();
+          BasicBlock *Exit1Exit = isGuardedFusion ? Second->getExitingBlock() : nullptr;
+          BasicBlock *Exit1ExitSucc = nullptr;
+          if (isGuardedFusion && Exit1Exit) {
+            if (auto *T1 = dyn_cast<BranchInst>(Exit1Exit->getTerminator())) {
+              for (unsigned s = 0; s < T1->getNumSuccessors(); ++s)
+                if (T1->getSuccessor(s) != SecondExit) Exit1ExitSucc = T1->getSuccessor(s);
             }
+          }
+          bool found = false;
+          for (unsigned s = 0; s < BI->getNumSuccessors(); ++s) {
+            if (BI->getSuccessor(s) == FirstExit) {
+              if (!isGuardedFusion) FirstExit->eraseFromParent();
+              BI->setSuccessor(s, SecondExit);
+              found = true;
+              break;
+            }
+          }
+          if (!found) continue;
+          if (isGuardedFusion && Exit1Exit && Exit1ExitSucc) {
+            SecondExit->removePredecessor(Exit1Exit);
+            if (auto *T1 = dyn_cast<BranchInst>(Exit1Exit->getTerminator())) {
+              BranchInst::Create(Exit1ExitSucc, T1);
+              T1->eraseFromParent();
+            }
+          }
+          SmallVector<BasicBlock *, 4> ToDelete(Second->getBlocks().begin(),
+                                                Second->getBlocks().end());
+          LI.erase(Second);
+          for (auto *BB : llvm::reverse(ToDelete)) BB->eraseFromParent();
+          Modified = true;
+          changedIter = true;
+          break;
+        } else {
+          BasicBlock *H1 = First->getHeader();
+          BasicBlock *H2 = Second->getHeader();
+          BasicBlock *L1 = First->getLoopLatch();
+          BasicBlock *L2 = Second->getLoopLatch();
+          if (!H1 || !H2 || !L1 || !L2) continue;
+          Value *Inc1Val = IV1->getIncomingValueForBlock(L1);
+          Value *Inc2Val = IV2->getIncomingValueForBlock(L2);
+          Instruction *Inc1 = dyn_cast<Instruction>(Inc1Val);
+          Instruction *Inc2 = dyn_cast<Instruction>(Inc2Val);
+          if (!Inc1 || !Inc2) continue;
+          if (Inc1->getParent() != H1 && Inc1->getParent() != L1) continue;
+          if (Inc2->getParent() != H2 && Inc2->getParent() != L2) continue;
+          IV2->replaceAllUsesWith(IV1);
+          SmallVector<Instruction *, 8> ToMove;
+          for (Instruction &I : *H2) {
+            if (isa<PHINode>(I)) continue;
+            if (&I == Inc2) continue;
+            if (I.isTerminator()) continue;
+            ToMove.push_back(&I);
+          }
+          for (Instruction *I : ToMove) I->moveBefore(Inc1);
+          // Guarded 2-block: keep guard, just retarget exit
+          BranchInst *BI = dyn_cast<BranchInst>(FirstExiting->getTerminator());
+          if (!BI) continue;
+          bool isGuarded2 = First->isGuarded() || Second->isGuarded();
+          BasicBlock *Exit1Ex = isGuarded2 ? Second->getExitingBlock() : nullptr;
+          BasicBlock *Exit1Succ = nullptr;
+          if (isGuarded2 && Exit1Ex) {
+            if (auto *T1 = dyn_cast<BranchInst>(Exit1Ex->getTerminator()))
+              for (unsigned s = 0; s < T1->getNumSuccessors(); ++s)
+                if (T1->getSuccessor(s) != SecondExit) Exit1Succ = T1->getSuccessor(s);
+          }
+          bool found = false;
+          for (unsigned s = 0; s < BI->getNumSuccessors(); ++s) {
+            if (BI->getSuccessor(s) == FirstExit) {
+              if (!isGuarded2) FirstExit->eraseFromParent();
+              BI->setSuccessor(s, SecondExit);
+              found = true;
+              break;
+            }
+          }
+          if (!found) continue;
+          if (isGuarded2 && Exit1Ex && Exit1Succ) {
+            SecondExit->removePredecessor(Exit1Ex);
+            if (auto *T1 = dyn_cast<BranchInst>(Exit1Ex->getTerminator())) {
+              BranchInst::Create(Exit1Succ, T1);
+              T1->eraseFromParent();
+            }
+          }
+          SmallVector<BasicBlock *, 4> ToDelete(Second->getBlocks().begin(),
+                                                Second->getBlocks().end());
+          LI.erase(Second);
+          for (auto *BB : llvm::reverse(ToDelete)) BB->eraseFromParent();
+          Modified = true;
+          changedIter = true;
+          break;
         }
-
-        // 4. Cleanup: Remove the second loop from the LoopInfo and delete its blocks
-        BasicBlock *H2 = Second->getHeader();
-        BasicBlock *L2 = Second->getLoopLatch();
-        
-        LI.erase(Second);
-
-        // Remove Header, Body and Latch of the second loop
-        L2->eraseFromParent();
-        SecondBody->eraseFromParent();
-        H2->eraseFromParent();
-        
-
-        Modified = true;
-        break;
       }
     }
     return Modified ? PreservedAnalyses::none() : PreservedAnalyses::all();
@@ -208,6 +355,9 @@ struct MyLoopFusion : PassInfoMixin<MyLoopFusion> {
 
 } // namespace
 
+//-----------------------------------------------------------------------------
+// New PM Registration
+//-----------------------------------------------------------------------------
 extern "C" LLVM_ATTRIBUTE_WEAK ::llvm::PassPluginLibraryInfo llvmGetPassPluginInfo() {
   return {LLVM_PLUGIN_API_VERSION, "MyLoopFusion", LLVM_VERSION_STRING,
           [](PassBuilder &PB) {
