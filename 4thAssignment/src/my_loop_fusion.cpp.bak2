@@ -357,135 +357,93 @@ struct MyLoopFusion : PassInfoMixin<MyLoopFusion> {
           BasicBlock *H2 = Second->getHeader();
           BasicBlock *L1 = First->getLoopLatch();
           BasicBlock *L2 = Second->getLoopLatch();
+          if (!H1 || !H2 || !L1 || !L2) continue;
 
-          if (!H1 || !H2 || !L1 || !L2)
-            continue;
+          Value *Inc1Val = IV1->getIncomingValueForBlock(L1);
+          Value *Inc2Val = IV2->getIncomingValueForBlock(L2);
+          Instruction *Inc1 = dyn_cast<Instruction>(Inc1Val);
+          Instruction *Inc2 = dyn_cast<Instruction>(Inc2Val);
+          if (!Inc1 || !Inc2) continue;
+          if (Inc1->getParent() != H1 && Inc1->getParent() != L1) continue;
+          if (Inc2->getParent() != H2 && Inc2->getParent() != L2) continue;
 
-          PHINode *SecondIV = IV2;
-          if (!SecondIV)
-            continue;
+          bool isGuarded2 = First->isGuarded() || Second->isGuarded();
 
-          // In this two-block form the first exiting block is the latch.
-          BranchInst *BI1 = dyn_cast<BranchInst>(L1->getTerminator());
-          BranchInst *BI2 = dyn_cast<BranchInst>(L2->getTerminator());
-
-          if (!BI1 || !BI2)
-            continue;
-
-          bool IsGuarded = First->isGuarded() && Second->isGuarded();
-
-          if (First->isGuarded() != Second->isGuarded())
-            continue;
+          BranchInst *BI = dyn_cast<BranchInst>(FirstExiting->getTerminator());
+          if (!BI) continue;
 
           BranchInst *Guard1 = nullptr;
           BranchInst *Guard2 = nullptr;
-          BasicBlock *Guard2Block = nullptr;
+          BasicBlock *FirstPreheader = nullptr;
+          BasicBlock *SecondPreheader = nullptr;
+          BasicBlock *Exit1Ex = nullptr;
 
-          if (IsGuarded) {
+          if (isGuarded2) {
             Guard1 = First->getLoopGuardBranch();
             Guard2 = Second->getLoopGuardBranch();
+            FirstPreheader = First->getLoopPreheader();
+            SecondPreheader = Second->getLoopPreheader();
+            Exit1Ex = Second->getExitingBlock();
 
-            if (!Guard1 || !Guard2)
-              continue;
-
-            Guard2Block = Guard2->getParent();
-
-            if (!Guard2Block)
+            if (!Guard1 || !Guard2 || !FirstPreheader ||
+                !SecondPreheader || !Exit1Ex)
               continue;
           }
 
-          // The two loops have the same trip count, so the body of the
-          // second loop can execute once for every iteration of the first.
-          SecondIV->replaceAllUsesWith(IV1);
-
-          // Move the non-PHI instructions of the second header into
-          // the first header, before its terminator.
-          Instruction *InsertPoint = H1->getTerminator();
-
-          for (auto It = H2->begin(); It != H2->end();) {
-            Instruction &I = *It++;
-
-            if (isa<PHINode>(&I))
-              continue;
-
-            if (I.isTerminator())
-              continue;
-
-            I.moveBefore(InsertPoint);
+          SmallVector<Instruction *, 8> ToMove;
+          for (Instruction &I : *H2) {
+            if (isa<PHINode>(I)) continue;
+            if (&I == Inc2) continue;
+            if (I.isTerminator()) continue;
+            ToMove.push_back(&I);
           }
 
-          // Redirect the first loop exit to the final exit of the second loop.
-          bool FirstExitChanged = false;
+          // Replace IV2 only in instructions that are moved into loop 1.
+          for (Instruction *I : ToMove)
+            I->replaceUsesOfWith(IV2, IV1);
 
-          for (unsigned s = 0; s < BI1->getNumSuccessors(); ++s) {
-            if (BI1->getSuccessor(s) == FirstExit) {
-              BI1->setSuccessor(s, SecondExit);
-              FirstExitChanged = true;
+          for (Instruction *I : ToMove)
+            I->moveBefore(Inc1);
+
+          // Redirect the first loop to the final exit.
+          bool found = false;
+          for (unsigned s = 0; s < BI->getNumSuccessors(); ++s) {
+            if (BI->getSuccessor(s) == FirstExit) {
+              BI->setSuccessor(s, SecondExit);
+              found = true;
               break;
             }
           }
+          if (!found) continue;
 
-          if (!FirstExitChanged)
-            continue;
-
-          // The second loop is no longer needed. Break its back-edge first,
-          // so that H2 and L2 can later be deleted safely.
-          bool SecondBackEdgeChanged = false;
-
-          for (unsigned s = 0; s < BI2->getNumSuccessors(); ++s) {
-            if (BI2->getSuccessor(s) == H2) {
-              BI2->setSuccessor(s, SecondExit);
-              SecondBackEdgeChanged = true;
-              break;
-            }
-          }
-
-          if (!SecondBackEdgeChanged)
-            continue;
-
-          // The first guard now handles the common loop condition.
-          // Its false edge can go directly to the second loop exit.
-          if (IsGuarded) {
-            bool GuardChanged = false;
-
+          if (isGuarded2) {
+            // The first guard is the only guard after fusion.
             for (unsigned s = 0; s < Guard1->getNumSuccessors(); ++s) {
-              if (Guard1->getSuccessor(s) != First->getLoopPreheader()) {
+              if (Guard1->getSuccessor(s) != FirstPreheader)
                 Guard1->setSuccessor(s, SecondExit);
-                GuardChanged = true;
-                break;
-              }
             }
 
-            if (!GuardChanged)
-              continue;
+            FirstExit->eraseFromParent();
+            SecondExit->removePredecessor(Exit1Ex);
+
+            // The second guard/preheader are no longer needed.
+            if (auto *T = dyn_cast<BranchInst>(Guard2->getParent()->getTerminator())) {
+              T->setSuccessor(0, SecondExit);
+              if (T->getNumSuccessors() > 1)
+                T->setSuccessor(1, SecondExit);
+            }
+
+            if (auto *T = dyn_cast<BranchInst>(SecondPreheader->getTerminator()))
+              T->setSuccessor(0, SecondExit);
+          } else {
+            FirstExit->eraseFromParent();
           }
 
-          SmallVector<BasicBlock *, 8> ToDelete;
-
-          // First exit is now unreachable.
-          ToDelete.push_back(FirstExit);
-
-          // The second guard and preheader are now unreachable because
-          // the first guard bypasses them.
-          if (IsGuarded) {
-            ToDelete.push_back(Guard2Block);
-
-            if (BasicBlock *SecondPreheader = Second->getLoopPreheader())
-              ToDelete.push_back(SecondPreheader);
-          }
-
-          // H2 and L2 are the second loop itself.
-          ToDelete.push_back(H2);
-          ToDelete.push_back(L2);
-
+          SmallVector<BasicBlock *, 4> ToDelete(Second->getBlocks().begin(),
+                                                Second->getBlocks().end());
           LI.erase(Second);
-
-          // Delete only blocks that no longer have incoming CFG edges.
-          // Order matters.
-          for (BasicBlock *BB : llvm::reverse(ToDelete)) {
-            if (BB && BB->getParent())
-              BB->eraseFromParent();
-          }
+          for (auto *BB : llvm::reverse(ToDelete))
+            BB->eraseFromParent();
 
           Modified = true;
           changedIter = true;
