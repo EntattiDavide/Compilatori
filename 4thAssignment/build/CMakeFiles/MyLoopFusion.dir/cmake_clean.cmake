@@ -1,4 +1,5 @@
 file(REMOVE_RECURSE
+  "CMakeFiles/MyLoopFusion.dir/link.d"
   "CMakeFiles/MyLoopFusion.dir/my_loop_fusion.cpp.o"
   "CMakeFiles/MyLoopFusion.dir/my_loop_fusion.cpp.o.d"
   "libMyLoopFusion.pdb"

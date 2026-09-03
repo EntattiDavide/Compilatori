@@ -1,1 +1,1 @@
-/usr/bin/c++ -fPIC -shared -Wl,-soname,libMyLoopFusion.so -o libMyLoopFusion.so CMakeFiles/MyLoopFusion.dir/my_loop_fusion.cpp.o 
+/usr/bin/c++ -fPIC -shared -Wl,--dependency-file=CMakeFiles/MyLoopFusion.dir/link.d -Wl,-soname,libMyLoopFusion.so -o libMyLoopFusion.so CMakeFiles/MyLoopFusion.dir/my_loop_fusion.cpp.o

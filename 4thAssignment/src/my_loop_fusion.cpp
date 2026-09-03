@@ -143,37 +143,85 @@ static bool hasNoNegativeDistanceDependencies(Loop *First, Loop *Second,
                                               ScalarEvolution &SE,
                                               DependenceInfo &DI) {
   SmallVector<Instruction *, 16> Mem0, Mem1;
+
   for (BasicBlock *BB : First->getBlocks())
     for (Instruction &I : *BB)
-      if (isa<LoadInst>(I) || isa<StoreInst>(I)) Mem0.push_back(&I);
+      if (isa<LoadInst>(I) || isa<StoreInst>(I))
+        Mem0.push_back(&I);
+
   for (BasicBlock *BB : Second->getBlocks())
     for (Instruction &I : *BB)
-      if (isa<LoadInst>(I) || isa<StoreInst>(I)) Mem1.push_back(&I);
+      if (isa<LoadInst>(I) || isa<StoreInst>(I))
+        Mem1.push_back(&I);
 
   for (Instruction *I0 : Mem0) {
     for (Instruction *I1 : Mem1) {
-      if (isa<LoadInst>(I0) && isa<LoadInst>(I1)) continue;
+
+      if (isa<LoadInst>(I0) && isa<LoadInst>(I1))
+        continue;
+
       std::unique_ptr<Dependence> Dep = DI.depends(I0, I1, true);
-      if (!Dep) continue;
+
+      if (!Dep)
+        continue;
+
       Value *Ptr0 = getLoadStorePointerOperand(I0);
       Value *Ptr1 = getLoadStorePointerOperand(I1);
-      if (!Ptr0 || !Ptr1) return false;
-      const SCEV *S0 = SE.getSCEVAtScope(Ptr0, First);
-      const SCEV *S1 = SE.getSCEVAtScope(Ptr1, Second);
-      if (isa<SCEVCouldNotCompute>(S0) || isa<SCEVCouldNotCompute>(S1)) return false;
-      const SCEV *Dist0 = SE.getMinusSCEV(S0, S1);
-      if (Dist0->isZero()) continue;
+
+      if (!Ptr0 || !Ptr1)
+        return false;
+
+      auto *GEP0 = dyn_cast<GetElementPtrInst>(Ptr0);
+      auto *GEP1 = dyn_cast<GetElementPtrInst>(Ptr1);
+
+      if (!GEP0 || !GEP1)
+        continue;
+
+      Value *Idx0 = GEP0->getOperand(GEP0->getNumOperands() - 1);
+      Value *Idx1 = GEP1->getOperand(GEP1->getNumOperands() - 1);
+
+      const SCEV *S0 = SE.getSCEVAtScope(Idx0, First);
+      const SCEV *S1 = SE.getSCEVAtScope(Idx1, Second);
+
+      if (!S0 || !S1)
+        return false;
+
+      if (isa<SCEVCouldNotCompute>(S0) ||
+          isa<SCEVCouldNotCompute>(S1))
+        return false;
+
       const SCEVAddRecExpr *AR0 = dyn_cast<SCEVAddRecExpr>(S0);
       const SCEVAddRecExpr *AR1 = dyn_cast<SCEVAddRecExpr>(S1);
-      if (!AR0 || !AR1) return false;
-      if (AR0->getStepRecurrence(SE) != AR1->getStepRecurrence(SE)) return false;
-      const SCEV *Step = AR0->getStepRecurrence(SE);
-      const SCEV *Dist = SE.getMinusSCEV(AR0->getStart(), AR1->getStart());
-      if ((SE.isKnownPositive(Step) && SE.isKnownNegative(Dist)) ||
-          (SE.isKnownNegative(Step) && SE.isKnownPositive(Dist)))
+
+      if (!AR0 || !AR1)
+        return false;
+
+      const SCEV *Step0 = AR0->getStepRecurrence(SE);
+      const SCEV *Step1 = AR1->getStepRecurrence(SE);
+
+      if (!Step0 || !Step1)
+        return false;
+
+      if (Step0 != Step1)
+        return false;
+
+      const SCEV *Distance =
+          SE.getMinusSCEV(AR0->getStart(), AR1->getStart());
+
+      if (!Distance)
+        return false;
+
+      if (isa<SCEVCouldNotCompute>(Distance))
+        continue;
+
+      if (!Distance->getType()->isIntegerTy())
+        continue;
+
+      if (SE.isKnownNegative(Distance))
         return false;
     }
   }
+
   return true;
 }
 
