@@ -4,49 +4,55 @@ target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:
 target triple = "x86_64-pc-linux-gnu"
 
 ; Function Attrs: noinline nounwind uwtable
-define dso_local void @test_fusion(ptr noundef %0, ptr noundef %1, ptr noundef %2, ptr noundef %3, i32 noundef %4, i32 noundef %5) #0 {
-  br label %7
+define dso_local void @test_fusion(ptr noundef %0, ptr noundef %1, ptr noundef %2, i32 noundef %3, i32 noundef %4) #0 {
+  br label %6
 
-7:                                                ; preds = %13, %6
-  %.0 = phi i32 [ 0, %6 ], [ %14, %13 ]
-  %8 = icmp slt i32 %.0, 100
-  br i1 %8, label %9, label %15
+6:                                                ; preds = %12, %5
+  %.01 = phi i32 [ 0, %5 ], [ %13, %12 ]
+  %7 = icmp slt i32 %.01, 100
+  br i1 %7, label %8, label %14
 
-9:                                                ; preds = %7
-  %10 = mul nsw i32 %.0, 2
-  %11 = sext i32 %.0 to i64
-  %12 = getelementptr inbounds i32, ptr %0, i64 %11
-  store i32 %10, ptr %12, align 4
-  br label %13
+8:                                                ; preds = %6
+  %9 = mul nsw i32 %.01, 2
+  %10 = sext i32 %.01 to i64
+  %11 = getelementptr inbounds i32, ptr %0, i64 %10
+  store i32 %9, ptr %11, align 4
+  br label %12
 
-13:                                               ; preds = %9
-  %14 = add nsw i32 %.0, 1
-  br label %7, !llvm.loop !6
+12:                                               ; preds = %8
+  %13 = add nsw i32 %.01, 1
+  br label %6, !llvm.loop !6
 
-15:                                               ; preds = %7
-  br label %16
+14:                                               ; preds = %6
+  %15 = icmp ne i32 %4, 0
+  br i1 %15, label %16, label %29
 
-16:                                               ; preds = %25, %15
-  %17 = icmp slt i32 0, 100
-  br i1 %17, label %18, label %28
+16:                                               ; preds = %14
+  br label %17
 
-18:                                               ; preds = %16
-  %19 = sext i32 0 to i64
-  %20 = getelementptr inbounds i32, ptr %0, i64 %19
-  %21 = load i32, ptr %20, align 4
-  %22 = add nsw i32 %21, 1
-  %23 = sext i32 0 to i64
-  %24 = getelementptr inbounds i32, ptr %1, i64 %23
-  store i32 %22, ptr %24, align 4
-  br label %28
+17:                                               ; preds = %26, %16
+  %.0 = phi i32 [ 0, %16 ], [ %27, %26 ]
+  %18 = icmp slt i32 %.0, 100
+  br i1 %18, label %19, label %28
 
-25:                                               ; No predecessors!
-  %26 = load i32, ptr poison, align 4
-  %27 = add nsw i32 %26, 1
-  store i32 %27, ptr poison, align 4
-  br label %16, !llvm.loop !8
+19:                                               ; preds = %17
+  %20 = sext i32 %.0 to i64
+  %21 = getelementptr inbounds i32, ptr %0, i64 %20
+  %22 = load i32, ptr %21, align 4
+  %23 = add nsw i32 %22, 1
+  %24 = sext i32 %.0 to i64
+  %25 = getelementptr inbounds i32, ptr %1, i64 %24
+  store i32 %23, ptr %25, align 4
+  br label %26
 
-28:                                               ; preds = %18, %16
+26:                                               ; preds = %19
+  %27 = add nsw i32 %.0, 1
+  br label %17, !llvm.loop !8
+
+28:                                               ; preds = %17
+  br label %29
+
+29:                                               ; preds = %28, %14
   ret void
 }
 
