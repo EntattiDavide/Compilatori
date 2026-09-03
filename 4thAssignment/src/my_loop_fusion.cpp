@@ -35,6 +35,7 @@ using namespace llvm;
 namespace {
 
 // Check if two loops are adjacent (PDF p.9) - with dedicated exit (LCSSA)
+// Check if two loops are adjacent and can be considered consecutive
 static bool areAdjacent(Loop *First, Loop *Second) {
   if (!First || !Second || First == Second) return false;
 
@@ -94,6 +95,7 @@ static bool areAdjacent(Loop *First, Loop *Second) {
 }
 
 // Check if loops have same trip count via ScalarEvolution (PDF p.14-17)
+// Check if two loops have the same trip count using ScalarEvolution
 static bool haveSameTripCount(Loop *First, Loop *Second, ScalarEvolution &SE) {
   const SCEV *FirstTrip = SE.getBackedgeTakenCount(First);
   const SCEV *SecondTrip = SE.getBackedgeTakenCount(Second);
@@ -105,6 +107,7 @@ static bool haveSameTripCount(Loop *First, Loop *Second, ScalarEvolution &SE) {
 
 // Check control flow equivalence on entry
 // Entry = guard block if guarded, else preheader
+// Check if two loops have equivalent control flow at their entry
 static bool areControlEquivalent(Loop *First, Loop *Second, DominatorTree &DT,
                                  PostDominatorTree &PDT) {
   auto getEntry = [](Loop *L) -> BasicBlock * {
@@ -121,6 +124,7 @@ static bool areControlEquivalent(Loop *First, Loop *Second, DominatorTree &DT,
 }
 
 // Get body block for 3-block loops (header / body / latch)
+// Get the body block of a loop with header, body and latch
 static BasicBlock *getBodyBlock(Loop *L) {
   BasicBlock *Header = L->getHeader();
   BasicBlock *Latch = L->getLoopLatch();
@@ -130,6 +134,7 @@ static BasicBlock *getBodyBlock(Loop *L) {
 }
 
 // Check that loop contains a single PHI (canonical IV)
+// Check that the loop contains exactly one PHI instruction
 static bool hasSinglePhiInstruction(Loop *L) {
   unsigned PhiCount = 0;
   for (BasicBlock *BB : L->getBlocks())
@@ -139,6 +144,7 @@ static bool hasSinglePhiInstruction(Loop *L) {
 }
 
 // Dependence check: DI + SCEVAtScope (PDF p.20-23)
+// Check memory dependences using DependenceInfo and SCEV distances
 static bool hasNoNegativeDistanceDependencies(Loop *First, Loop *Second,
                                               ScalarEvolution &SE,
                                               DependenceInfo &DI) {
@@ -225,6 +231,7 @@ static bool hasNoNegativeDistanceDependencies(Loop *First, Loop *Second,
   return true;
 }
 
+// Main loop fusion pass
 struct MyLoopFusion : PassInfoMixin<MyLoopFusion> {
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &FAM) {
     // Get required analyses
@@ -237,6 +244,7 @@ struct MyLoopFusion : PassInfoMixin<MyLoopFusion> {
     bool Modified = false;
 
     // Build ordered list of innermost loops in program order
+    // Build the list of innermost loops in program order
     auto getOrdered = [&]() {
       SmallVector<Loop *, 8> V;
       for (Loop *L : LI)
@@ -251,6 +259,7 @@ struct MyLoopFusion : PassInfoMixin<MyLoopFusion> {
     };
 
     // Try to fuse successive loops iteratively (enables chaining 3->1)
+    // Repeat fusion while at least one pair was fused
     bool changedIter = true;
     while (changedIter) {
       changedIter = false;
@@ -261,10 +270,12 @@ struct MyLoopFusion : PassInfoMixin<MyLoopFusion> {
         Loop *First = Ordered[i];
         Loop *Second = Ordered[i + 1];
 
+        // Require both loops to be in Loop Simplify Form
         // Require loop-simplify form
         if (!First->isLoopSimplifyForm() || !Second->isLoopSimplifyForm()) continue;
         if (First->getParentLoop() != Second->getParentLoop()) continue;
 
+        // Check all conditions required for fusion
         // Check all 4 fusion conditions separately to print every failure
         bool adj = areAdjacent(First, Second);
         bool trip = haveSameTripCount(First, Second, SE);
@@ -274,6 +285,7 @@ struct MyLoopFusion : PassInfoMixin<MyLoopFusion> {
                << " ctrl=" << ctrl << " dep=" << dep << "\n";
         if (!adj || !trip || !ctrl || !dep) continue;
 
+        // Check that both loops have the same supported shape
         // Check loop shape (must match, 2 or 3 blocks)
         unsigned n1 = First->getNumBlocks();
         unsigned n2 = Second->getNumBlocks();
@@ -291,6 +303,7 @@ struct MyLoopFusion : PassInfoMixin<MyLoopFusion> {
         if (!hasSinglePhiInstruction(First) || !hasSinglePhiInstruction(Second))
           continue;
 
+        // Fuse loops with three basic blocks
         if (n1 == 3) {
           BasicBlock *FirstBody = getBodyBlock(First);
           BasicBlock *SecondBody = getBodyBlock(Second);
@@ -337,6 +350,7 @@ struct MyLoopFusion : PassInfoMixin<MyLoopFusion> {
           Modified = true;
           changedIter = true;
           break;
+        // Fuse loops with two basic blocks
         } else {
           BasicBlock *H1 = First->getHeader();
           BasicBlock *H2 = Second->getHeader();
