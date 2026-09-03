@@ -8,7 +8,8 @@ set(CMAKE_DEPENDS_LANGUAGES
 
 # The set of dependency files which are needed:
 set(CMAKE_DEPENDS_DEPENDENCY_FILES
-  "/root/Compilatori/1stAssignment/AlgebraicIdentity/src/AlgebraicIdentity.cpp" "CMakeFiles/AlgebraicIdentity.dir/AlgebraicIdentity.cpp.o" "gcc" "CMakeFiles/AlgebraicIdentity.dir/AlgebraicIdentity.cpp.o.d"
+  "/home/jassi/Compilatori/1stAssignment/AlgebraicIdentity/src/AlgebraicIdentity.cpp" "CMakeFiles/AlgebraicIdentity.dir/AlgebraicIdentity.cpp.o" "gcc" "CMakeFiles/AlgebraicIdentity.dir/AlgebraicIdentity.cpp.o.d"
+  "" "libAlgebraicIdentity.so" "gcc" "CMakeFiles/AlgebraicIdentity.dir/link.d"
   )
 
 # Targets to which this target links which contain Fortran sources.

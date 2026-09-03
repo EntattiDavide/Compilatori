@@ -1,4 +1,5 @@
 file(REMOVE_RECURSE
+  "CMakeFiles/StrengthReduction.dir/link.d"
   "CMakeFiles/StrengthReduction.dir/StrengthReduction.cpp.o"
   "CMakeFiles/StrengthReduction.dir/StrengthReduction.cpp.o.d"
   "libStrengthReduction.pdb"

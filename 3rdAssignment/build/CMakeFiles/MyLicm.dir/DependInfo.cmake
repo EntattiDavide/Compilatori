@@ -8,7 +8,8 @@ set(CMAKE_DEPENDS_LANGUAGES
 
 # The set of dependency files which are needed:
 set(CMAKE_DEPENDS_DEPENDENCY_FILES
-  "/root/Compilatori/3rdAssignment/src/my_licm.cpp" "CMakeFiles/MyLicm.dir/my_licm.cpp.o" "gcc" "CMakeFiles/MyLicm.dir/my_licm.cpp.o.d"
+  "/home/jassi/Compilatori/3rdAssignment/src/my_licm.cpp" "CMakeFiles/MyLicm.dir/my_licm.cpp.o" "gcc" "CMakeFiles/MyLicm.dir/my_licm.cpp.o.d"
+  "" "libMyLicm.so" "gcc" "CMakeFiles/MyLicm.dir/link.d"
   )
 
 # Targets to which this target links which contain Fortran sources.
