@@ -13,7 +13,7 @@ define dso_local void @test_fusion(ptr noundef %0, ptr noundef %1, i32 noundef %
 
 7:                                                ; preds = %13, %6
   %.01 = phi i32 [ 0, %6 ], [ %14, %13 ]
-  %8 = icmp slt i32 %.01, 100
+  %8 = icmp slt i32 %.01, %2
   br i1 %8, label %9, label %15
 
 9:                                                ; preds = %7
@@ -39,7 +39,7 @@ define dso_local void @test_fusion(ptr noundef %0, ptr noundef %1, i32 noundef %
 
 19:                                               ; preds = %28, %18
   %.0 = phi i32 [ 0, %18 ], [ %29, %28 ]
-  %20 = icmp slt i32 %.0, 100
+  %20 = icmp slt i32 %.0, %3
   br i1 %20, label %21, label %30
 
 21:                                               ; preds = %19

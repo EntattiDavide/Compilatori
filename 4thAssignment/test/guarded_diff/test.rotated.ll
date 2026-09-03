@@ -21,7 +21,7 @@ define dso_local void @test_fusion(ptr noundef %0, ptr noundef %1, i32 noundef %
 
 11:                                               ; preds = %7
   %12 = add nsw i32 %.011, 1
-  %13 = icmp slt i32 %12, 100
+  %13 = icmp slt i32 %12, %2
   br i1 %13, label %7, label %14, !llvm.loop !6
 
 14:                                               ; preds = %11
@@ -47,7 +47,7 @@ define dso_local void @test_fusion(ptr noundef %0, ptr noundef %1, i32 noundef %
 
 25:                                               ; preds = %18
   %26 = add nsw i32 %.02, 1
-  %27 = icmp slt i32 %26, 100
+  %27 = icmp slt i32 %26, %3
   br i1 %27, label %18, label %28, !llvm.loop !8
 
 28:                                               ; preds = %25

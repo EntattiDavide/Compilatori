@@ -1,36 +1,40 @@
-; ModuleID = 'test.m2r.ll'
+; ModuleID = 'test.rotated.ll'
 source_filename = "test.c"
 target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
 target triple = "x86_64-pc-linux-gnu"
 
 ; Function Attrs: noinline nounwind uwtable
 define dso_local void @test_fusion(ptr noundef %0, ptr noundef %1, i32 noundef %2) #0 {
-  br label %4
+  %4 = icmp sgt i32 %2, 0
+  br i1 %4, label %5, label %19
 
-4:                                                ; preds = %16, %3
-  %.01 = phi i32 [ 0, %3 ], [ %17, %16 ]
-  %5 = icmp slt i32 %.01, %2
-  br i1 %5, label %6, label %18
+5:                                                ; preds = %3
+  br label %6
 
-6:                                                ; preds = %4
-  %7 = mul nsw i32 %.01, 2
-  %8 = sext i32 %.01 to i64
+6:                                                ; preds = %16, %5
+  %.011 = phi i32 [ 0, %5 ], [ %17, %16 ]
+  %7 = mul nsw i32 %.011, 2
+  %8 = sext i32 %.011 to i64
   %9 = getelementptr inbounds i32, ptr %0, i64 %8
   store i32 %7, ptr %9, align 4
-  %10 = sext i32 %.01 to i64
+  %10 = sext i32 %.011 to i64
   %11 = getelementptr inbounds i32, ptr %0, i64 %10
   %12 = load i32, ptr %11, align 4
   %13 = add nsw i32 %12, 1
-  %14 = sext i32 %.01 to i64
+  %14 = sext i32 %.011 to i64
   %15 = getelementptr inbounds i32, ptr %1, i64 %14
   store i32 %13, ptr %15, align 4
   br label %16
 
 16:                                               ; preds = %6
-  %17 = add nsw i32 %.01, 1
-  br label %4, !llvm.loop !6
+  %17 = add nsw i32 %.011, 1
+  %18 = icmp slt i32 %17, %2
+  br i1 %18, label %6, label %19, !llvm.loop !6
 
-18:                                               ; preds = %4
+19:                                               ; preds = %3, %16
+  br label %20
+
+20:                                               ; preds = %19
   ret void
 }
 
