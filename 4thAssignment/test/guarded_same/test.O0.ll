@@ -15,76 +15,70 @@ define dso_local void @test_fusion(ptr noundef %0, ptr noundef %1, i32 noundef %
   store i32 %2, ptr %6, align 4
   %9 = load i32, ptr %6, align 4
   %10 = icmp sgt i32 %9, 0
-  br i1 %10, label %11, label %27
+  br i1 %10, label %11, label %26
 
 11:                                               ; preds = %3
   store i32 0, ptr %7, align 4
   br label %12
 
-12:                                               ; preds = %23, %11
+12:                                               ; preds = %21, %11
   %13 = load i32, ptr %7, align 4
-  %14 = load i32, ptr %6, align 4
-  %15 = icmp slt i32 %13, %14
-  br i1 %15, label %16, label %26
+  %14 = mul nsw i32 %13, 2
+  %15 = load ptr, ptr %4, align 8
+  %16 = load i32, ptr %7, align 4
+  %17 = sext i32 %16 to i64
+  %18 = getelementptr inbounds i32, ptr %15, i64 %17
+  store i32 %14, ptr %18, align 4
+  %19 = load i32, ptr %7, align 4
+  %20 = add nsw i32 %19, 1
+  store i32 %20, ptr %7, align 4
+  br label %21
 
-16:                                               ; preds = %12
-  %17 = load i32, ptr %7, align 4
-  %18 = mul nsw i32 %17, 2
-  %19 = load ptr, ptr %4, align 8
-  %20 = load i32, ptr %7, align 4
-  %21 = sext i32 %20 to i64
-  %22 = getelementptr inbounds i32, ptr %19, i64 %21
-  store i32 %18, ptr %22, align 4
-  br label %23
+21:                                               ; preds = %12
+  %22 = load i32, ptr %7, align 4
+  %23 = load i32, ptr %6, align 4
+  %24 = icmp slt i32 %22, %23
+  br i1 %24, label %12, label %25, !llvm.loop !6
 
-23:                                               ; preds = %16
-  %24 = load i32, ptr %7, align 4
-  %25 = add nsw i32 %24, 1
-  store i32 %25, ptr %7, align 4
-  br label %12, !llvm.loop !6
+25:                                               ; preds = %21
+  br label %26
 
-26:                                               ; preds = %12
-  br label %27
+26:                                               ; preds = %25, %3
+  %27 = load i32, ptr %6, align 4
+  %28 = icmp sgt i32 %27, 0
+  br i1 %28, label %29, label %48
 
-27:                                               ; preds = %26, %3
-  %28 = load i32, ptr %6, align 4
-  %29 = icmp sgt i32 %28, 0
-  br i1 %29, label %30, label %50
-
-30:                                               ; preds = %27
+29:                                               ; preds = %26
   store i32 0, ptr %8, align 4
-  br label %31
+  br label %30
 
-31:                                               ; preds = %46, %30
+30:                                               ; preds = %43, %29
+  %31 = load ptr, ptr %4, align 8
   %32 = load i32, ptr %8, align 4
-  %33 = load i32, ptr %6, align 4
-  %34 = icmp slt i32 %32, %33
-  br i1 %34, label %35, label %49
+  %33 = sext i32 %32 to i64
+  %34 = getelementptr inbounds i32, ptr %31, i64 %33
+  %35 = load i32, ptr %34, align 4
+  %36 = add nsw i32 %35, 1
+  %37 = load ptr, ptr %5, align 8
+  %38 = load i32, ptr %8, align 4
+  %39 = sext i32 %38 to i64
+  %40 = getelementptr inbounds i32, ptr %37, i64 %39
+  store i32 %36, ptr %40, align 4
+  %41 = load i32, ptr %8, align 4
+  %42 = add nsw i32 %41, 1
+  store i32 %42, ptr %8, align 4
+  br label %43
 
-35:                                               ; preds = %31
-  %36 = load ptr, ptr %4, align 8
-  %37 = load i32, ptr %8, align 4
-  %38 = sext i32 %37 to i64
-  %39 = getelementptr inbounds i32, ptr %36, i64 %38
-  %40 = load i32, ptr %39, align 4
-  %41 = add nsw i32 %40, 1
-  %42 = load ptr, ptr %5, align 8
-  %43 = load i32, ptr %8, align 4
-  %44 = sext i32 %43 to i64
-  %45 = getelementptr inbounds i32, ptr %42, i64 %44
-  store i32 %41, ptr %45, align 4
-  br label %46
+43:                                               ; preds = %30
+  %44 = load i32, ptr %8, align 4
+  %45 = load i32, ptr %6, align 4
+  %46 = icmp slt i32 %44, %45
+  br i1 %46, label %30, label %47, !llvm.loop !8
 
-46:                                               ; preds = %35
-  %47 = load i32, ptr %8, align 4
-  %48 = add nsw i32 %47, 1
-  store i32 %48, ptr %8, align 4
-  br label %31, !llvm.loop !8
+47:                                               ; preds = %43
+  br label %48
 
-49:                                               ; preds = %31
-  br label %50
-
-50:                                               ; preds = %49, %27
+48:                                               ; preds = %47, %26
   ret void
 }
 
